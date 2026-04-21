@@ -1,6 +1,8 @@
 import asyncio
 import json
 import os
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from aiohttp import ClientSession
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
@@ -129,8 +131,22 @@ async def validate_cards(update: Update, context: ContextTypes.DEFAULT_TYPE):
 """
         await update.message.reply_text(resumen)
 
+# Servidor web dummy para engañar a Render y evitar que apague el bot
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+
+def keep_alive():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), DummyHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
 # Inicializa el bot
 def main():
+    keep_alive()
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, validate_cards))
