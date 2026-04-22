@@ -13,11 +13,11 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
-    filters
+    filters,
 )
 
 # ==============================
-# CONFIGURACIÓN (AHORA SEGURA)
+# CONFIGURACION SEGURA
 # ==============================
 
 API_KEY = os.getenv("60509DF1-3D9D-4B03-A7F4-4CB9LC6EA649")
@@ -27,202 +27,212 @@ TOKEN = os.getenv("8439810935:AAEFnqLOSjwhRg4f6AmFL1H-ifr3umOxx7E")
 FLOW_URL = "https://api.flow.cl/api/payment/create"
 
 if not TOKEN:
-    raise ValueError("Falta el TOKEN de Telegram en variables de entorno")
+    raise ValueError("Falta TELEGRAM_TOKEN en variables de entorno")
 
 if not API_KEY or not SECRET_KEY:
-    raise ValueError("Faltan API_KEY o SECRET_KEY en variables de entorno")
+    raise ValueError("Faltan FLOW_API_KEY o FLOW_SECRET_KEY en variables de entorno")
+
 
 # ==============================
-# RESULTADOS
-# ==============================
-
-results = {
-    "live": [],
-    "die": [],
-    "unknown": []
-}
-
-# ==============================
-# GENERAR FIRMA
+# GENERAR FIRMA FLOW
 # ==============================
 
 def generar_firma(params, secret_key):
     cadena = ""
+
     for key in sorted(params.keys()):
         cadena += f"{key}{params[key]}"
+
     cadena += secret_key
 
-    return hashlib.sha256(
-        cadena.encode("utf-8")
-    ).hexdigest()
+    return hashlib.sha256(cadena.encode("utf-8")).hexdigest()
+
 
 # ==============================
 # MENSAJE RESULTADO
 # ==============================
 
-def generar_mensaje(data, linea):
-
+def generar_mensaje(data, tarjeta):
     if isinstance(data, dict) and "url" in data:
-        return f"""✅ LIVE
+        return f"""✅ PAGO CREADO
 
-Dato:
-{linea}
+Tarjeta:
+{tarjeta}
 
 Link de pago:
 {data.get("url")}
 """
 
-    return f"""❓ UNKNOWN
+    return f"""❓ RESPUESTA DESCONOCIDA
 
-Dato:
-{linea}
+Tarjeta:
+{tarjeta}
 
 Respuesta:
 {data}
 """
+
 
 # ==============================
 # START
 # ==============================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
     await update.message.reply_text(
-        "Envíame líneas separadas por salto de línea.\n"
-        "Formato:\n"
-        "dato1|dato2|dato3"
+        "Envíame tarjetas separadas por salto de línea.\n"
+        "Formato ejemplo:\n"
+        "5154620023923996|01|2029|120\n"
+        "5154620023949041|01|2029|196\n"
+        "5154620023915653|01|2029|893\n"
     )
 
+
 # ==============================
-# PROCESAR
+# CREAR PAGO
 # ==============================
 
-async def validate_cards(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def crear_pago(session, tarjeta):
+    partes = [p.strip() for p in tarjeta.split("|")]
 
-    if not update.message:
+    number = partes[0] if len(partes) >= 1 and partes[0] else "5154620023923996"
+    expiry_month = partes[1] if len(partes) >= 2 and partes[1] else "01"
+    expiry_year = partes[2] if len(partes) >= 3 and partes[2] else "2029"
+    cvv = partes[3] if len(partes) >= 4 and partes[3] else "120"
+
+    params = {
+        "apiKey": API_KEY,
+        "commerceOrder": f"ORD-{uuid.uuid4().hex[:12]}",
+        "subject": "Pago generado",
+        "currency": "CLP",
+        "amount": int(1000),  # Puedes cambiar el monto según sea necesario
+        "cardNumber": number,
+        "expiryMonth": expiry_month,
+        "expiryYear": expiry_year,
+        "cvv": cvv,
+    }
+
+    params["s"] = generar_firma(params, SECRET_KEY)
+
+    async with session.post(FLOW_URL, data=params) as res:
+        text_response = await res.text()
+
+        try:
+            data = json.loads(text_response)
+        except json.JSONDecodeError:
+            data = text_response
+
+        return res.status, data
+
+
+# ==============================
+# PROCESAR MENSAJES
+# ==============================
+
+async def process_payments(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
         return
-
-    results["live"].clear()
-    results["die"].clear()
-    results["unknown"].clear()
 
     text = update.message.text.strip()
 
-    lines = [
-        l.strip()
-        for l in text.split('\n')
-        if '|' in l
+    tarjetas = [
+        line.strip()
+        for line in text.split("\n")
+        if "|" in line
     ]
 
-    if not lines:
-        await update.message.reply_text("❌ No se encontraron líneas válidas.")
+    if not tarjetas:
+        await update.message.reply_text("❌ No se encontraron tarjetas válidas.")
         return
 
-    live_count = 0
-    die_count = 0
-    unknown_count = 0
+    results = {
+        "live": [],
+        "die": [],
+        "unknown": [],
+    }
 
-    await update.message.reply_text("🔍 Procesando...")
+    await update.message.reply_text("🔍 Procesando pagos...")
 
     timeout = ClientTimeout(total=30)
 
     async with ClientSession(timeout=timeout) as session:
-
-        for linea in lines:
-
+        for tarjeta in tarjetas:
             try:
+                status, data = await crear_pago(session, tarjeta)
 
-                params = {
-                    "apiKey": API_KEY,
-                    "commerceOrder": f"ORD-{int(asyncio.get_event_loop().time())}",
-                    "subject": "Pago generado",
-                    "currency": "CLP",
-                    "amount": 1000,
-                    "email": "cliente@email.com"
-                }
+                if status != 200:
+                    results["unknown"].append(tarjeta)
+                    await update.message.reply_text(
+                        f"⚠️ Flow respondió HTTP {status} para:\n{tarjeta}"
+                    )
+                    print(f"Flow error {status}: {data}")
+                    continue
 
-                firma = generar_firma(params, SECRET_KEY)
-                params["s"] = firma
+                if isinstance(data, dict) and "url" in data:
+                    results["live"].append(tarjeta)
+                else:
+                    results["unknown"].append(tarjeta)
 
-                async with session.post(FLOW_URL, data=params) as res:
-
-                    if res.status != 200:
-                        results["unknown"].append(linea)
-                        unknown_count += 1
-
-                        await update.message.reply_text(f"⚠️ HTTP {res.status}")
-                        continue
-
-                    text_response = await res.text()
-
-                    try:
-                        data = json.loads(text_response)
-                    except:
-                        data = text_response
-
-                    if isinstance(data, dict) and "url" in data:
-                        results["live"].append(linea)
-                        live_count += 1
-                    else:
-                        results["unknown"].append(linea)
-                        unknown_count += 1
-
-                    mensaje = generar_mensaje(data, linea)
-
-                    await update.message.reply_text(mensaje)
+                await update.message.reply_text(generar_mensaje(data, tarjeta))
 
             except asyncio.TimeoutError:
-                results["unknown"].append(linea)
-                unknown_count += 1
+                results["unknown"].append(tarjeta)
+                await update.message.reply_text(f"⏱️ Timeout:\n{tarjeta}")
 
-                await update.message.reply_text(f"⏱️ Timeout: {linea}")
+            except ValueError as e:
+                results["die"].append(tarjeta)
+                await update.message.reply_text(f"❌ Dato inválido:\n{str(e)}\n\n{tarjeta}")
 
             except Exception as e:
-                results["die"].append(linea)
-                die_count += 1
-
-                await update.message.reply_text(f"❌ Error: {str(e)}")
+                results["die"].append(tarjeta)
+                print(f"Error procesando tarjeta '{tarjeta}': {e}")
+                await update.message.reply_text(f"❌ Error procesando:\n{tarjeta}")
 
             await asyncio.sleep(1)
 
+    live_count = len(results["live"])
+    die_count = len(results["die"])
+    unknown_count = len(results["unknown"])
     total = live_count + die_count + unknown_count
 
-    resumen = f"""✅ LIVE: {live_count}
-❌ DIE: {die_count}
-❓ UNKNOWN: {unknown_count}
+    resumen = f"""✅ CREADOS: {live_count}
+❌ ERROR: {die_count}
+❓ DESCONOCIDOS: {unknown_count}
 📊 TOTAL: {total}
 """
 
     await update.message.reply_text(resumen)
 
+
 # ==============================
-# KEEP ALIVE (RENDER)
+# KEEP ALIVE PARA RENDER
 # ==============================
 
 class DummyHandler(BaseHTTPRequestHandler):
-
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
         self.wfile.write(b"Bot is running")
 
+    def log_message(self, format, *args):
+        return
+
+
 def keep_alive():
     port = int(os.environ.get("PORT", 8080))
-
     server = HTTPServer(("0.0.0.0", port), DummyHandler)
 
     threading.Thread(
         target=server.serve_forever,
-        daemon=True
+        daemon=True,
     ).start()
+
 
 # ==============================
 # MAIN
 # ==============================
 
 def main():
-
     keep_alive()
 
     app = ApplicationBuilder().token(TOKEN).build()
@@ -232,13 +242,14 @@ def main():
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            validate_cards
+            process_payments,
         )
     )
 
     print("Bot ejecutándose")
 
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
