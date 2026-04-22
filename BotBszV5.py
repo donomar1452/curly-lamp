@@ -1,306 +1,224 @@
-import asyncio
-import json
-import hashlib
-import threading
-import os
+const TelegramBot = require("node-telegram-bot-api");
+const express = require("express");
+const fetch = require("node-fetch");
+const crypto = require("crypto");
 
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from aiohttp import ClientSession, ClientTimeout
+const app = express();
 
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters
-)
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-# ==============================
-# CONFIGURACIÓN API FLOW
-# ==============================
+// =========================
+// CONFIGURACIÓN
+// =========================
 
-API_KEY = "60509DF1-3D9D-4B03-A7F4-4CB9LC6EA649"
-SECRET_KEY = "fab6effe60ec982f683d8982626fa6b1ee6c17cc"
+// Token de tu bot de Telegram
+const TELEGRAM_TOKEN = "8439810935:AAEFnqLOSjwhRg4f6AmFL1H-ifr3umOxx7E";
 
-FLOW_URL = "https://sandbox.flow.cl/api/payment/create"
+// Credenciales Flow
+const API_KEY =
+  "60509DF1-3D9D-4B03-A7F4-4CB9LC6EA649";
 
-# ==============================
-# RESULTADOS
-# ==============================
+const SECRET_KEY =
+  "fab6effe60ec982f683d8982626fa6b1ee6c17cc";
 
-results = {
-    "live": [],
-    "die": [],
-    "unknown": []
+// Producción
+const FLOW_URL =
+  "https://www.flow.cl/api/payment/create";
+
+// Crear bot
+const bot = new TelegramBot(
+  TELEGRAM_TOKEN,
+  { polling: true }
+);
+
+// =========================
+// FUNCIÓN FIRMA SHA256
+// =========================
+
+function generarFirma(params) {
+
+  const keys =
+    Object.keys(params).sort();
+
+  let cadena = "";
+
+  keys.forEach(key => {
+    cadena += key + params[key];
+  });
+
+  cadena += SECRET_KEY;
+
+  return crypto
+    .createHash("sha256")
+    .update(cadena)
+    .digest("hex");
 }
 
-TOKEN = os.getenv("8439810935:AAEFnqLOSjwhRg4f6AmFL1H-ifr3umOxx7E")
+// =========================
+// CREAR PAGO FLOW
+// =========================
 
-if not TOKEN:
-    TOKEN = input("8439810935:AAEFnqLOSjwhRg4f6AmFL1H-ifr3umOxx7E: ")
+async function crearPago(monto, email) {
 
-# ==============================
-# GENERAR FIRMA
-# ==============================
+  try {
 
-def generar_firma(params, secret_key):
+    const params = {
+      apiKey: API_KEY,
 
-    cadena = ""
+      commerceOrder:
+        "ORD-" + Date.now(),
 
-    for key in sorted(params.keys()):
-        cadena += f"{key}{params[key]}"
+      subject: "Pago desde Telegram",
 
-    cadena += secret_key
+      currency: "CLP",
 
-    return hashlib.sha256(
-        cadena.encode("utf-8")
-    ).hexdigest()
+      amount: monto,
 
-# ==============================
-# MENSAJE RESULTADO
-# ==============================
+      email: email
+    };
 
-def generar_mensaje(data, linea):
+    const firma =
+      generarFirma(params);
 
-    if "url" in data:
+    params.s = firma;
 
-        return f"""
-✅ LIVE
+    const response =
+      await fetch(
+        FLOW_URL,
+        {
+          method: "POST",
 
-Dato:
-{linea}
+          headers: {
+            "Content-Type":
+              "application/x-www-form-urlencoded"
+          },
 
-Link de pago:
-{data.get("url")}
-"""
+          body:
+            new URLSearchParams(
+              params
+            )
+        }
+      );
 
-    return f"""
-❓ UNKNOWN
+    const data =
+      await response.json();
 
-Dato:
-{linea}
+    return data;
 
-Respuesta:
-{data}
-"""
+  } catch (error) {
 
-# ==============================
-# START
-# ==============================
+    return {
+      error: error.message
+    };
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+  }
 
-    await update.message.reply_text(
-        "Envíame líneas separadas por salto de línea.\n"
-        "Formato:\n"
-        "dato1|dato2|dato3"
-    )
+}
 
-# ==============================
-# PROCESAR
-# ==============================
+// =========================
+// COMANDO /start
+// =========================
 
-async def validate_cards(update: Update, context: ContextTypes.DEFAULT_TYPE):
+bot.onText(/\/start/, msg => {
 
-    if not update.message:
-        return
+  bot.sendMessage(
+    msg.chat.id,
 
-    results["live"].clear()
-    results["die"].clear()
-    results["unknown"].clear()
+    "Bienvenido.\n\n" +
+    "Usa:\n" +
+    "/pagar 1000\n\n" +
+    "Ejemplo:\n" +
+    "/pagar 5000"
+  );
 
-    text = update.message.text.strip()
+});
 
-    lines = [
-        l.strip()
-        for l in text.split('\n')
-        if '|' in l
-    ]
+// =========================
+// COMANDO /pagar
+// =========================
 
-    if not lines:
+bot.onText(
+  /\/pagar (\d+)/,
 
-        await update.message.reply_text(
-            "❌ No se encontraron líneas válidas."
-        )
+  async (msg, match) => {
 
-        return
+    const chatId =
+      msg.chat.id;
 
-    live_count = 0
-    die_count = 0
-    unknown_count = 0
+    const monto =
+      parseInt(match[1]);
 
-    await update.message.reply_text(
-        "🔍 Procesando..."
-    )
+    bot.sendMessage(
+      chatId,
 
-    timeout = ClientTimeout(total=30)
+      "Creando pago..."
+    );
 
-    async with ClientSession(timeout=timeout) as session:
+    const email =
+      "cliente@email.com";
 
-        for linea in lines:
+    const pago =
+      await crearPago(
+        monto,
+        email
+      );
 
-            try:
+    if (pago.url) {
 
-                params = {
-                    "apiKey": API_KEY,
-                    "commerceOrder": f"ORD-{int(asyncio.get_event_loop().time())}",
-                    "subject": "Pago generado",
-                    "currency": "CLP",
-                    "amount": 1000,
-                    "email": "cliente@email.com"
-                }
+      const link =
+        `${pago.url}?token=${pago.token}`;
 
-                firma = generar_firma(
-                    params,
-                    SECRET_KEY
-                )
+      bot.sendMessage(
+        chatId,
 
-                params["s"] = firma
+        "Pago creado correctamente\n\n" +
+        "Monto: $" + monto + "\n\n" +
+        "Pagar aquí:\n" +
+        link
+      );
 
-                async with session.post(
-                    FLOW_URL,
-                    data=params
-                ) as res:
+    } else {
 
-                    if res.status != 200:
+      bot.sendMessage(
+        chatId,
 
-                        results["unknown"].append(linea)
-                        unknown_count += 1
+        "Error al crear pago:\n\n" +
+        JSON.stringify(pago)
+      );
 
-                        await update.message.reply_text(
-                            f"⚠️ HTTP {res.status}"
-                        )
+    }
 
-                        continue
+  }
+);
 
-                    text_response = await res.text()
+// =========================
+// WEBHOOK DE CONFIRMACIÓN
+// =========================
 
-                    try:
+app.post(
+  "/webhook-flow",
 
-                        data = json.loads(
-                            text_response
-                        )
+  (req, res) => {
 
-                    except:
+    console.log(
+      "Pago confirmado:",
+      req.body
+    );
 
-                        data = text_response
+    res.sendStatus(200);
 
-                    if isinstance(data, dict) and "url" in data:
+  }
+);
 
-                        results["live"].append(linea)
-                        live_count += 1
+// =========================
+// SERVIDOR
+// =========================
 
-                    else:
+app.listen(3000, () => {
 
-                        results["unknown"].append(linea)
-                        unknown_count += 1
+  console.log(
+    "Bot ejecutándose..."
+  );
 
-                    mensaje = generar_mensaje(
-                        data,
-                        linea
-                    )
-
-                    await update.message.reply_text(
-                        mensaje
-                    )
-
-            except asyncio.TimeoutError:
-
-                results["unknown"].append(linea)
-                unknown_count += 1
-
-                await update.message.reply_text(
-                    f"⏱️ Timeout: {linea}"
-                )
-
-            except Exception as e:
-
-                results["die"].append(linea)
-                die_count += 1
-
-                await update.message.reply_text(
-                    f"❌ Error: {str(e)}"
-                )
-
-            await asyncio.sleep(1)
-
-    total = live_count + die_count + unknown_count
-
-    resumen = f"""
-✅ LIVE: {live_count}
-❌ DIE: {die_count}
-❓ UNKNOWN: {unknown_count}
-📊 TOTAL: {total}
-"""
-
-    await update.message.reply_text(resumen)
-
-# ==============================
-# KEEP ALIVE
-# ==============================
-
-class DummyHandler(BaseHTTPRequestHandler):
-
-    def do_GET(self):
-
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-
-        self.wfile.write(
-            b"Bot is running"
-        )
-
-def keep_alive():
-
-    port = int(
-        os.environ.get(
-            "PORT",
-            8080
-        )
-    )
-
-    server = HTTPServer(
-        ("0.0.0.0", port),
-        DummyHandler
-    )
-
-    threading.Thread(
-        target=server.serve_forever,
-        daemon=True
-    ).start()
-
-# ==============================
-# MAIN
-# ==============================
-
-def main():
-
-    keep_alive()
-
-    app = ApplicationBuilder().token(
-        TOKEN
-    ).build()
-
-    app.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
-    )
-
-    app.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            validate_cards
-        )
-    )
-
-    print("Bot ejecutándose")
-
-    app.run_polling()
-
-if __name__ == "__main__":
-
-    main()
+});
