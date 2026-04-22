@@ -22,14 +22,14 @@ results = {
 }
 
 # Token del bot de Telegram (predeterminado)
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TOKEN = os.getenv("8665043435:AAHFivj5qzSZduT71qGJujoFengHDe3AX_U")
 
 # URL base de la API de Flow
 FLOW_URL = "https://api.flow.cl/api/payment/create"
 
 # Credenciales de la API de Flow
-FLOW_API_KEY = os.getenv("FLOW_API_KEY")
-FLOW_SECRET_KEY = os.getenv("FLOW_SECRET_KEY")
+FLOW_API_KEY = os.getenv("60509DF1-3D9D-4B03-A7F4-4CB9LC6EA649")
+FLOW_SECRET_KEY = os.getenv("fab6effe60ec982f683d8982626fa6b1ee6c17cc")
 
 if not TOKEN or not FLOW_API_KEY or not FLOW_SECRET_KEY:
     print("❌ ERROR: Faltan las claves de API (TELEGRAM_BOT_TOKEN, FLOW_API_KEY o FLOW_SECRET_KEY). Revisa tu archivo .env.")
