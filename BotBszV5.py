@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from aiohttp import ClientSession, ClientTimeout
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
@@ -21,53 +22,28 @@ FLOW_URL = "https://api.flow.cl/api/payment/create"
 FLOW_API_KEY = "60509DF1-3D9D-4B03-A7F4-4CB9LC6EA649"
 FLOW_SECRET_KEY = "fab6effe60ec982f683d8982626fa6b1ee6c17cc"
 
-# Función que genera la firma SHA-256 para la petición
-def generar_firma(params, secret_key):
-    cadena = ""
+# Ruta al archivo de bloqueo
+LOCK_FILE = '/tmp/bot_lock'
 
-    for key in sorted(params.keys()):
-        cadena += f"{key}{params[key]}"
+def acquire_lock():
+    """Adquiere un bloqueo."""
+    try:
+        with open(LOCK_FILE, 'x'):
+            return True
+    except FileExistsError:
+        return False
 
-    cadena += secret_key
+def release_lock():
+    """Libera el bloqueo."""
+    if os.path.exists(LOCK_FILE):
+        os.remove(LOCK_FILE)
 
-    return hashlib.sha256(cadena.encode("utf-8")).hexdigest()
-
-# Función que genera el mensaje detallado en formato HTML
-def generar_mensaje(data: dict, tarjeta: str = 'N/A') -> str:
-    card = data.get('card', {})
-    country = card.get('country', {})
-    location = country.get('location', {})
-
-    code = data.get("code")
-    status = data.get("status", "N/A")
-
-    # Emoji de color según el código
-    if code == 0:
-        color_emoji = "🔴"
-    elif code == 2:
-        color_emoji = "🟡"
-    else:
-        color_emoji = "🟢"
-
-    return f"""💳 <b>{card.get('card', tarjeta)}</b>
-📊 <b>Status:</b> {color_emoji} {status} ({code})
-💬 <b>Mensaje:</b> {data.get('message', 'Sin mensaje')}
-🏦 <b>Banco:</b> {card.get('bank', 'Desconocido')}
-📌 <b>Tipo:</b> {card.get('type', '?')} - {card.get('category', '?')}
-🏷️ <b>Marca:</b> {card.get('brand', 'N/A')}
-🌎 <b>País:</b> {country.get('name', 'N/A')} ({country.get('code', '-')}) {country.get('emoji', '')}
-💱 <b>Moneda:</b> {country.get('currency', 'N/A')}
-📍 <b>Geo:</b> Lat: {location.get('latitude', '?')}, Lng: {location.get('longitude', '?')}
-✅ Verificado con el bot <b>BSZChecker</b>"""
-
-# Comando /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "¡Hola! Envíame una lista de tarjetas separadas por línea (formato xxxx|xxxx|xxxx) para validarlas.\n"
         "También puedes mencionar al bot en un grupo con las tarjetas."
     )
 
-# Manejador de validación
 async def validate_cards(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
@@ -162,13 +138,19 @@ async def validate_cards(update: Update, context: ContextTypes.DEFAULT_TYPE):
 """
         await update.message.reply_text(resumen)
 
-# Inicializa el bot
 def main():
+    if not acquire_lock():
+        print("Otra instancia del bot ya está ejecutando.")
+        return
+
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, validate_cards))
-    print("✅ Bot ejecutándose...")
-    app.run_polling()
+
+    try:
+        app.run_polling()
+    finally:
+        release_lock()
 
 if __name__ == "__main__":
     main()
