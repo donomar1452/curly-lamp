@@ -11,8 +11,8 @@ results = {
     "unknown": []
 }
 
-# Solicita el token del bot
-TOKEN = input("8439810935:AAEFnqLOSjwhRg4f6AmFL1H-ifr3umOxx7E ")
+# Token del bot de Telegram (predeterminado)
+TOKEN = '8439810935:AAEFnqLOSjwhRg4f6AmFL1H-ifr3umOxx7E'
 
 # URL base de la API de Flow
 FLOW_URL = "https://api.flow.cl/api/payment/create"
