@@ -1,9 +1,17 @@
 import asyncio
 import json
 import os
+import uuid
+import hmac
+import hashlib
+import tempfile
 from aiohttp import ClientSession, ClientTimeout
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+from dotenv import load_dotenv
+
+# Cargar variables de entorno desde el archivo .env
+load_dotenv()
 
 # Diccionario para almacenar los resultados de las tarjetas
 results = {
@@ -13,17 +21,42 @@ results = {
 }
 
 # Token del bot de Telegram (predeterminado)
-TOKEN = '8439810935:AAEFnqLOSjwhRg4f6AmFL1H-ifr3umOxx7E'
+TOKEN = os.getenv("T8439810935:AAEFnqLOSjwhRg4f6AmFL1H-ifr3umOxx7E")
 
 # URL base de la API de Flow
 FLOW_URL = "https://api.flow.cl/api/payment/create"
 
 # Credenciales de la API de Flow
-FLOW_API_KEY = "60509DF1-3D9D-4B03-A7F4-4CB9LC6EA649"
-FLOW_SECRET_KEY = "fab6effe60ec982f683d8982626fa6b1ee6c17cc"
+FLOW_API_KEY = os.getenv("60509DF1-3D9D-4B03-A7F4-4CB9LC6EA649")
+FLOW_SECRET_KEY = os.getenv("fab6effe60ec982f683d8982626fa6b1ee6c17cc")
+
+if not TOKEN or not FLOW_API_KEY or not FLOW_SECRET_KEY:
+    print("❌ ERROR: Faltan las claves de API (TELEGRAM_BOT_TOKEN, FLOW_API_KEY o FLOW_SECRET_KEY). Revisa tu archivo .env.")
+    exit(1)
 
 # Ruta al archivo de bloqueo
-LOCK_FILE = '/tmp/bot_lock'
+LOCK_FILE = os.path.join(tempfile.gettempdir(), 'bot_lock_bsz')
+
+def generar_firma(params, secret_key):
+    """Genera la firma HMAC-SHA256 requerida por la API de Flow."""
+    claves_ordenadas = sorted(params.keys())
+    string_a_firmar = "".join([f"{k}{params[k]}" for k in claves_ordenadas])
+    firma = hmac.new(secret_key.encode('utf-8'), string_a_firmar.encode('utf-8'), hashlib.sha256).hexdigest()
+    return firma
+
+def generar_mensaje(data, tarjeta):
+    """Genera el mensaje formateado con la respuesta de la API."""
+    code = data.get("code")
+    status_msg = data.get("message", "Sin detalles adicionales")
+    
+    if code == 0:
+        estado = "❌ DIE"
+    elif code == 2:
+        estado = "❓ UNKNOWN"
+    else:
+        estado = "✅ LIVE"
+        
+    return f"💳 <b>Tarjeta:</b> <code>{tarjeta}</code>\n📊 <b>Estado:</b> {estado}\n💬 <b>Respuesta:</b> {status_msg}"
 
 def acquire_lock():
     """Adquiere un bloqueo."""
