@@ -73,7 +73,7 @@ async def chk(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for tarjeta in lines:
             try:
                 async with session.post(
-                    "API PRIVADA",
+                    "60509DF1-3D9D-4B03-A7F4-4CB9LC6EA649",
                     headers={
                         'Content-Type': 'application/x-www-form-urlencoded',
                         'User-Agent': 'Mozilla/5.0'

@@ -1,235 +1,306 @@
 import asyncio
 import json
-import random
-from aiohttp import ClientSession
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
+import hashlib
+import threading
+import os
+
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from aiohttp import ClientSession, ClientTimeout
+
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    ConversationHandler,
-    filters,
     ContextTypes,
+    MessageHandler,
+    filters
 )
 
-# ————— Estados para el Generador —————
-BIN, MES, ANO, CVV, CANTIDAD = range(5)
+# ==============================
+# CONFIGURACIÓN API FLOW
+# ==============================
 
-# ————— Datos temporales por usuario —————
-user_data_temp = {}
+API_KEY = "60509DF1-3D9D-4B03-A7F4-4CB9LC6EA649"
+SECRET_KEY = "fab6effe60ec982f683d8982626fa6b1ee6c17cc"
 
-# ————— Diccionario para resultados del Checker —————
+FLOW_URL = "https://sandbox.flow.cl/api/payment/create"
+
+# ==============================
+# RESULTADOS
+# ==============================
+
 results = {
     "live": [],
     "die": [],
-    "unknown": [],
+    "unknown": []
 }
 
-# ————— Token del bot —————
-TOKEN = input("Introduce el TOKEN del bot de Telegram: ")
+TOKEN = os.getenv("8439810935:AAEFnqLOSjwhRg4f6AmFL1H-ifr3umOxx7E")
 
-# ————— Función de generación de tarjetas —————
-def generar_tarjeta(bin_base: str, mes: str, ano: str, cvv: str, cantidad: int):
-    tarjetas = set()
+if not TOKEN:
+    TOKEN = input("8439810935:AAEFnqLOSjwhRg4f6AmFL1H-ifr3umOxx7E: ")
 
-    rnd_mes = lambda: f"{random.randint(1,12):02d}"
-    rnd_ano = lambda: str(random.randint(2025,2030))
-    rnd_cvv = lambda: f"{random.randint(0,999):03d}"
+# ==============================
+# GENERAR FIRMA
+# ==============================
 
-    while len(tarjetas) < cantidad:
-        tarjeta_num = ''.join(
-            str(random.randint(0, 9)) if c.lower() == 'x' else c
-            for c in bin_base
-        )
-        final_mes = rnd_mes() if mes.lower() == "random" else mes
-        final_ano = rnd_ano() if ano.lower() == "random" else ano
-        final_cvv = rnd_cvv() if cvv.lower() == "random" else cvv
+def generar_firma(params, secret_key):
 
-        tarjetas.add(f"{tarjeta_num}|{final_mes}|{final_ano}|{final_cvv}")
-    return tarjetas
+    cadena = ""
 
-# ————— Comando /start —————
+    for key in sorted(params.keys()):
+        cadena += f"{key}{params[key]}"
+
+    cadena += secret_key
+
+    return hashlib.sha256(
+        cadena.encode("utf-8")
+    ).hexdigest()
+
+# ==============================
+# MENSAJE RESULTADO
+# ==============================
+
+def generar_mensaje(data, linea):
+
+    if "url" in data:
+
+        return f"""
+✅ LIVE
+
+Dato:
+{linea}
+
+Link de pago:
+{data.get("url")}
+"""
+
+    return f"""
+❓ UNKNOWN
+
+Dato:
+{linea}
+
+Respuesta:
+{data}
+"""
+
+# ==============================
+# START
+# ==============================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("1️⃣ Checker", callback_data="checker")],
-        [InlineKeyboardButton("2️⃣ Generador", callback_data="generador")],
-        [InlineKeyboardButton("3️⃣ Información", callback_data="info")],
-    ]
+
     await update.message.reply_text(
-        "👋 ¡Bienvenido! Elige una opción:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        "Envíame líneas separadas por salto de línea.\n"
+        "Formato:\n"
+        "dato1|dato2|dato3"
     )
 
-# ————— Callback de menú —————
-async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    choice = query.data
+# ==============================
+# PROCESAR
+# ==============================
 
-    if choice == "checker":
-        await query.edit_message_text("🔍 Envía tus tarjetas con /chk o pega la lista aquí (xxxx|xx|xxxx|xxx).")
+async def validate_cards(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not update.message:
         return
 
-    if choice == "info":
-        await query.edit_message_text(
-            "🤖 BSZCheckerBot\n"
-            "• Verifica tarjetas con /chk\n"
-            "• Genera BINs con opción Generador\n"
-            "🔗 https://chekerv2bsz.foroactivo.com"
-        )
-        return
+    results["live"].clear()
+    results["die"].clear()
+    results["unknown"].clear()
 
-    if choice == "generador":
-        await query.edit_message_text("🧾 Por favor escribe el BIN (usa X para aleatorio), e.g.: 4147202656xxxxxx")
-        return BIN
+    text = update.message.text.strip()
 
-# ————— Generador paso a paso —————
-async def recibir_bin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['bin'] = update.message.text.strip()
-    await update.message.reply_text("📅 Escribe el mes (MM), e.g.: 03 o escribe 'random'")
-    return MES
+    lines = [
+        l.strip()
+        for l in text.split('\n')
+        if '|' in l
+    ]
 
-async def recibir_mes(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['mes'] = update.message.text.strip()
-    await update.message.reply_text("📆 Escribe el año (YYYY), e.g.: 2026 o escribe 'random'")
-    return ANO
-
-async def recibir_ano(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['ano'] = update.message.text.strip()
-    await update.message.reply_text("🔐 Escribe el CVV (3 dígitos) o escribe 'random'")
-    return CVV
-
-async def recibir_cvv(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['cvv'] = update.message.text.strip()
-    await update.message.reply_text("🔢 ¿Cuántas tarjetas deseas generar?")
-    return CANTIDAD
-
-async def recibir_cantidad(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        cantidad = int(update.message.text.strip())
-    except ValueError:
-        await update.message.reply_text("❌ Ingresa un número válido.")
-        return CANTIDAD
-
-    bin_input = context.user_data['bin']
-    mes = context.user_data['mes']
-    ano = context.user_data['ano']
-    cvv = context.user_data['cvv']
-
-    tarjetas = generar_tarjeta(bin_input, mes, ano, cvv, cantidad)
-
-    lista = list(tarjetas)
-    for i in range(0, len(lista), 40):
-        chunk = "\n".join(lista[i:i+40])
-        await update.message.reply_text(f"🎉 Generadas:\n\n{chunk}")
-
-    return ConversationHandler.END
-
-# ————— Cancelar conversación —————
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("❌ Generador cancelado.")
-    return ConversationHandler.END
-
-# ————— Checker de tarjetas —————
-def generar_mensaje(data: dict, tarjeta: str) -> str:
-    card = data.get("card", {})
-    country = card.get("country", {})
-    loc = country.get("location", {})
-    code = data.get("code", -1)
-    status = data.get("status", "N/A")
-
-    emoji = "🟢" if code == 1 else "🟡" if code == 2 else "🔴"
-
-    return (
-        f"💳 <b>{card.get('card', tarjeta)}</b>\n"
-        f"📊 <b>Status:</b> {emoji} {status} ({code})\n"
-        f"🏦 <b>Banco:</b> {card.get('bank','?')}\n"
-        f"📌 <b>Tipo:</b> {card.get('type','?')} - {card.get('category','?')}\n"
-        f"🏷️ <b>Marca:</b> {card.get('brand','N/A')}\n"
-        f"🌎 <b>País:</b> {country.get('name','N/A')} ({country.get('code','-')}) {country.get('emoji','')}\n"
-        f"💱 <b>Moneda:</b> {country.get('currency','?')}\n"
-        f"📍 <b>Geo:</b> Lat:{loc.get('latitude','?')} Lng:{loc.get('longitude','?')}\n"
-        "✅ Verificado con BSZChecker"
-    )
-
-async def chk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text or ""
-    bot_user = (await context.bot.get_me()).username
-
-    if update.message.chat.type != "private":
-        text = text.replace(f"@{bot_user}", "").strip()
-
-    lines = [l.strip() for l in text.splitlines() if "|" in l]
     if not lines:
-        await update.message.reply_text("❌ No encontré tarjetas para validar.")
+
+        await update.message.reply_text(
+            "❌ No se encontraron líneas válidas."
+        )
+
         return
 
-    live = die = unk = 0
-    await update.message.reply_text("🔍 Validando...")
+    live_count = 0
+    die_count = 0
+    unknown_count = 0
 
-    async with ClientSession() as session:
-        for tarjeta in lines:
+    await update.message.reply_text(
+        "🔍 Procesando..."
+    )
+
+    timeout = ClientTimeout(total=30)
+
+    async with ClientSession(timeout=timeout) as session:
+
+        for linea in lines:
+
             try:
+
+                params = {
+                    "apiKey": API_KEY,
+                    "commerceOrder": f"ORD-{int(asyncio.get_event_loop().time())}",
+                    "subject": "Pago generado",
+                    "currency": "CLP",
+                    "amount": 1000,
+                    "email": "cliente@email.com"
+                }
+
+                firma = generar_firma(
+                    params,
+                    SECRET_KEY
+                )
+
+                params["s"] = firma
+
                 async with session.post(
-                    "API PRIVADA",
-                    headers={
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "User-Agent": "Mozilla/5.0"
-                    },
-                    data=f"data={tarjeta}&charge=false"
+                    FLOW_URL,
+                    data=params
                 ) as res:
-                    data = json.loads(await res.text())
-            except Exception:
-                unk += 1
-                await update.message.reply_text(f"⚠️ Error con {tarjeta}")
-                continue
 
-            code = data.get("code", -1)
-            if code == 0: die += 1
-            elif code == 2: unk += 1
-            else: live += 1
+                    if res.status != 200:
 
-            await update.message.reply_text(
-                generar_mensaje(data, tarjeta),
-                parse_mode="HTML"
-            )
+                        results["unknown"].append(linea)
+                        unknown_count += 1
+
+                        await update.message.reply_text(
+                            f"⚠️ HTTP {res.status}"
+                        )
+
+                        continue
+
+                    text_response = await res.text()
+
+                    try:
+
+                        data = json.loads(
+                            text_response
+                        )
+
+                    except:
+
+                        data = text_response
+
+                    if isinstance(data, dict) and "url" in data:
+
+                        results["live"].append(linea)
+                        live_count += 1
+
+                    else:
+
+                        results["unknown"].append(linea)
+                        unknown_count += 1
+
+                    mensaje = generar_mensaje(
+                        data,
+                        linea
+                    )
+
+                    await update.message.reply_text(
+                        mensaje
+                    )
+
+            except asyncio.TimeoutError:
+
+                results["unknown"].append(linea)
+                unknown_count += 1
+
+                await update.message.reply_text(
+                    f"⏱️ Timeout: {linea}"
+                )
+
+            except Exception as e:
+
+                results["die"].append(linea)
+                die_count += 1
+
+                await update.message.reply_text(
+                    f"❌ Error: {str(e)}"
+                )
+
             await asyncio.sleep(1)
 
-    total = live + die + unk
-    await update.message.reply_text(
-        f"✅ LIVE: {live}\n❌ DIE: {die}\n❓ UNKNOWN: {unk}\n📊 TOTAL: {total}"
+    total = live_count + die_count + unknown_count
+
+    resumen = f"""
+✅ LIVE: {live_count}
+❌ DIE: {die_count}
+❓ UNKNOWN: {unknown_count}
+📊 TOTAL: {total}
+"""
+
+    await update.message.reply_text(resumen)
+
+# ==============================
+# KEEP ALIVE
+# ==============================
+
+class DummyHandler(BaseHTTPRequestHandler):
+
+    def do_GET(self):
+
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+
+        self.wfile.write(
+            b"Bot is running"
+        )
+
+def keep_alive():
+
+    port = int(
+        os.environ.get(
+            "PORT",
+            8080
+        )
     )
 
-if __name__ == "__main__":
-    import logging
-    logging.basicConfig(level=logging.INFO)
-    print("✅ Bot iniciado... Esperando comandos.")
-
-    app = ApplicationBuilder().token(TOKEN).build()
-
-    # Conversación para Generador
-    generador_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(menu_callback, pattern="^generador$")],
-        states={
-            BIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_bin)],
-            MES: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_mes)],
-            ANO: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_ano)],
-            CVV: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_cvv)],
-            CANTIDAD: [MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_cantidad)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
+    server = HTTPServer(
+        ("0.0.0.0", port),
+        DummyHandler
     )
 
-    # Handlers principales
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("chk", chk))
-    app.add_handler(generador_handler)
-    app.add_handler(CallbackQueryHandler(menu_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chk))
+    threading.Thread(
+        target=server.serve_forever,
+        daemon=True
+    ).start()
+
+# ==============================
+# MAIN
+# ==============================
+
+def main():
+
+    keep_alive()
+
+    app = ApplicationBuilder().token(
+        TOKEN
+    ).build()
+
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            validate_cards
+        )
+    )
+
+    print("Bot ejecutándose")
 
     app.run_polling()
+
+if __name__ == "__main__":
+
+    main()
