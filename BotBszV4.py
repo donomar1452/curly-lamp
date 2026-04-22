@@ -1,140 +1,306 @@
 import asyncio
 import json
-from aiohttp import ClientSession
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+import hashlib
+import threading
+import os
 
-# Diccionario para almacenar los resultados de las tarjetas
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from aiohttp import ClientSession, ClientTimeout
+
+from telegram import Update
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters
+)
+
+# ==============================
+# CONFIGURACIÓN API FLOW (MODO PRODUCCIÓN)
+# ==============================
+
+API_KEY = "60509DF1-3D9D-4B03-A7F4-4CB9LC6EA649"
+SECRET_KEY = "fab6effe60ec982f683d8982626fa6b1ee6c17cc"
+
+FLOW_URL = "https://api.flow.cl/api/payment/create"  # Cambiado a modo producción
+
+# ==============================
+# RESULTADOS
+# ==============================
+
 results = {
     "live": [],
     "die": [],
     "unknown": []
 }
 
-# Solicita el token del bot
-TOKEN = input("Introduce el TOKEN del bot de Telegram: ")
+TOKEN = os.getenv("8439810935:AAEFnqLOSjwhRg4f6AmFL1H-ifr3umOxx7E")
 
-# Función que genera el mensaje detallado en formato HTML
-def generar_mensaje(data: dict, tarjeta: str = 'N/A') -> str:
-    card = data.get('card', {})
-    country = card.get('country', {})
-    location = country.get('location', {})
+if not TOKEN:
+    TOKEN = input("8439810935:AAEFnqLOSjwhRg4f6AmFL1H-ifr3umOxx7E")
 
-    code = data.get("code")
-    status = data.get("status", "N/A")
+# ==============================
+# GENERAR FIRMA
+# ==============================
 
-    # Emoji de color según el código
-    if code == 0:
-        color_emoji = "🔴"
-    elif code == 2:
-        color_emoji = "🟡"
-    else:
-        color_emoji = "🟢"
+def generar_firma(params, secret_key):
 
-    return f"""💳 <b>{card.get('card', tarjeta)}</b>
-📊 <b>Status:</b> {color_emoji} {status} ({code})
-💬 <b>Mensaje:</b> {data.get('message', 'Sin mensaje')}
-🏦 <b>Banco:</b> {card.get('bank', 'Desconocido')}
-📌 <b>Tipo:</b> {card.get('type', '?')} - {card.get('category', '?')}
-🏷️ <b>Marca:</b> {card.get('brand', 'N/A')}
-🌎 <b>País:</b> {country.get('name', 'N/A')} ({country.get('code', '-')}) {country.get('emoji', '')}
-💱 <b>Moneda:</b> {country.get('currency', 'N/A')}
-📍 <b>Geo:</b> Lat: {location.get('latitude', '?')}, Lng: {location.get('longitude', '?')}
-✅ Verificado con el bot <b>BSZChecker</b>"""
+    cadena = ""
 
-# Comando /start
+    for key in sorted(params.keys()):
+        cadena += f"{key}{params[key]}"
+
+    cadena += secret_key
+
+    return hashlib.sha256(
+        cadena.encode("utf-8")
+    ).hexdigest()
+
+# ==============================
+# MENSAJE RESULTADO
+# ==============================
+
+def generar_mensaje(data, linea):
+
+    if "url" in data:
+
+        return f"""
+✅ LIVE
+
+Dato:
+{linea}
+
+Link de pago:
+{data.get("url")}
+"""
+
+    return f"""
+❓ UNKNOWN
+
+Dato:
+{linea}
+
+Respuesta:
+{data}
+"""
+
+# ==============================
+# START
+# ==============================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     await update.message.reply_text(
-        "¡Hola! Envíame una lista de tarjetas separadas por línea (formato xxxx|xxxx|xxxx) para validarlas.\n"
-        "También puedes mencionar al bot en un grupo con las tarjetas."
+        "Envíame líneas separadas por salto de línea.\n"
+        "Formato:\n"
+        "dato1|dato2|dato3"
     )
 
-# Comando /chk para validar tarjetas
-async def chk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
+# ==============================
+# PROCESAR
+# ==============================
+
+async def validate_cards(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not update.message:
         return
 
-    # Evitar procesar en grupos sin mencionar al bot
-    bot_username = (await context.bot.get_me()).username
-    if update.message.chat.type != "private" and f"@{bot_username}" not in update.message.text:
-        return
+    results["live"].clear()
+    results["die"].clear()
+    results["unknown"].clear()
 
-    text = update.message.text.replace(f"@{bot_username}", "").strip()
-    lines = [l.strip() for l in text.split('\n') if '|' in l]
+    text = update.message.text.strip()
+
+    lines = [
+        l.strip()
+        for l in text.split('\n')
+        if '|' in l
+    ]
 
     if not lines:
-        await update.message.reply_text("❌ No se encontraron tarjetas válidas.")
+
+        await update.message.reply_text(
+            "❌ No se encontraron líneas válidas."
+        )
+
         return
 
-    live_count = die_count = unknown_count = 0
-    await update.message.reply_text("🔍 Validando tarjetas...\n")
+    live_count = 0
+    die_count = 0
+    unknown_count = 0
 
-    async with ClientSession() as session:
-        for tarjeta in lines:
+    await update.message.reply_text(
+        "🔍 Procesando..."
+    )
+
+    timeout = ClientTimeout(total=30)
+
+    async with ClientSession(timeout=timeout) as session:
+
+        for linea in lines:
+
             try:
+
+                params = {
+                    "apiKey": API_KEY,
+                    "commerceOrder": f"ORD-{int(asyncio.get_event_loop().time())}",
+                    "subject": "Pago generado",
+                    "currency": "CLP",
+                    "amount": 1000,
+                    "email": "cliente@email.com"
+                }
+
+                firma = generar_firma(
+                    params,
+                    SECRET_KEY
+                )
+
+                params["s"] = firma
+
                 async with session.post(
-                    "60509DF1-3D9D-4B03-A7F4-4CB9LC6EA649",
-                    headers={
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                        'User-Agent': 'Mozilla/5.0'
-                    },
-                    data=f"data={tarjeta}&charge=false"
+                    FLOW_URL,  # Cambiado a modo producción
+                    data=params
                 ) as res:
+
+                    if res.status != 200:
+
+                        results["unknown"].append(linea)
+                        unknown_count += 1
+
+                        await update.message.reply_text(
+                            f"⚠️ HTTP {res.status}"
+                        )
+
+                        continue
+
                     text_response = await res.text()
 
                     try:
-                        data = json.loads(text_response)
-                    except json.JSONDecodeError:
-                        await update.message.reply_text(
-                            f"⚠️ Respuesta inesperada para {tarjeta}:\n{text_response}"
+
+                        data = json.loads(
+                            text_response
                         )
-                        results["unknown"].append(tarjeta)
-                        unknown_count += 1
-                        continue
 
-                    card_info = data.get("card", {}).get("card", tarjeta)
-                    code = data.get("code")
-                    status = data.get("status", "N/A")
+                    except:
 
-                    if code == 0:
-                        results["die"].append(card_info)
-                        die_count += 1
-                    elif code == 2:
-                        results["unknown"].append(card_info)
-                        unknown_count += 1
-                    else:
-                        results["live"].append(card_info)
+                        data = text_response
+
+                    if isinstance(data, dict) and "url" in data:
+
+                        results["live"].append(linea)
                         live_count += 1
 
-                    mensaje = generar_mensaje(data, tarjeta)
-                    await update.message.reply_text(mensaje, parse_mode='HTML')
+                    else:
+
+                        results["unknown"].append(linea)
+                        unknown_count += 1
+
+                    mensaje = generar_mensaje(
+                        data,
+                        linea
+                    )
+
+                    await update.message.reply_text(
+                        mensaje
+                    )
+
+            except asyncio.TimeoutError:
+
+                results["unknown"].append(linea)
+                unknown_count += 1
+
+                await update.message.reply_text(
+                    f"⏱️ Timeout: {linea}"
+                )
 
             except Exception as e:
-                results["die"].append(tarjeta)
+
+                results["die"].append(linea)
                 die_count += 1
-                await update.message.reply_text(f"❌ Error al validar {tarjeta}:\n{e}")
+
+                await update.message.reply_text(
+                    f"❌ Error: {str(e)}"
+                )
 
             await asyncio.sleep(1)
 
-        total = live_count + die_count + unknown_count
-        resumen = f"""
+    total = live_count + die_count + unknown_count
+
+    resumen = f"""
 ✅ LIVE: {live_count}
 ❌ DIE: {die_count}
 ❓ UNKNOWN: {unknown_count}
 📊 TOTAL: {total}
-🔍 Verificado con el bot BSZChecker
-🔍 Web : https://chekerv2bsz.foroactivo.com 
 """
-        await update.message.reply_text(resumen)
 
-# Inicializa el bot
+    await update.message.reply_text(resumen)
+
+# ==============================
+# KEEP ALIVE
+# ==============================
+
+class DummyHandler(BaseHTTPRequestHandler):
+
+    def do_GET(self):
+
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+
+        self.wfile.write(
+            b"Bot is running"
+        )
+
+def keep_alive():
+
+    port = int(
+        os.environ.get(
+            "PORT",
+            8080
+        )
+    )
+
+    server = HTTPServer(
+        ("0.0.0.0", port),
+        DummyHandler
+    )
+
+    threading.Thread(
+        target=server.serve_forever,
+        daemon=True
+    ).start()
+
+# ==============================
+# MAIN
+# ==============================
+
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("chk", chk))  # Añadido comando /chk
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chk))  # Cambiado para que el comando funcione sin necesidad de mencionar al bot
-    print("✅ Bot ejecutándose...")
+
+    keep_alive()
+
+    app = ApplicationBuilder().token(
+        TOKEN
+    ).build()
+
+    app.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
+
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            validate_cards
+        )
+    )
+
+    print("Bot ejecutándose")
+
     app.run_polling()
 
 if __name__ == "__main__":
+
     main()

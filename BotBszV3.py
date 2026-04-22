@@ -17,13 +17,13 @@ from telegram.ext import (
 )
 
 # ==============================
-# CONFIGURACIÓN API FLOW
+# CONFIGURACIÓN API FLOW (MODO PRODUCCIÓN)
 # ==============================
 
 API_KEY = "60509DF1-3D9D-4B03-A7F4-4CB9LC6EA649"
 SECRET_KEY = "fab6effe60ec982f683d8982626fa6b1ee6c17cc"
 
-FLOW_URL = "https://sandbox.flow.cl/api/payment/create"
+FLOW_URL = "https://api.flow.cl/api/payment/create"  # Cambiado a modo producción
 
 # ==============================
 # RESULTADOS
@@ -35,10 +35,10 @@ results = {
     "unknown": []
 }
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")
+TOKEN = os.getenv("8439810935:AAEFnqLOSjwhRg4f6AmFL1H-ifr3umOxx7E")
 
 if not TOKEN:
-    TOKEN = input("Introduce el TOKEN del bot de Telegram: ")
+    TOKEN = input("8439810935:AAEFnqLOSjwhRg4f6AmFL1H-ifr3umOxx7E")
 
 # ==============================
 # GENERAR FIRMA
@@ -159,7 +159,7 @@ async def validate_cards(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 params["s"] = firma
 
                 async with session.post(
-                    FLOW_URL,
+                    FLOW_URL,  # Cambiado a modo producción
                     data=params
                 ) as res:
 
