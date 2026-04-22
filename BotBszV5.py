@@ -10,8 +10,9 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 from dotenv import load_dotenv
 
-# Cargar variables de entorno desde el archivo .env
-load_dotenv()
+# Asegurar que encuentre el archivo .env sin importar desde dónde se ejecute la terminal
+env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
+load_dotenv(dotenv_path=env_path)
 
 # Diccionario para almacenar los resultados de las tarjetas
 results = {
@@ -21,14 +22,14 @@ results = {
 }
 
 # Token del bot de Telegram (predeterminado)
-TOKEN = os.getenv("T8439810935:AAEFnqLOSjwhRg4f6AmFL1H-ifr3umOxx7E")
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # URL base de la API de Flow
 FLOW_URL = "https://api.flow.cl/api/payment/create"
 
 # Credenciales de la API de Flow
-FLOW_API_KEY = os.getenv("60509DF1-3D9D-4B03-A7F4-4CB9LC6EA649")
-FLOW_SECRET_KEY = os.getenv("fab6effe60ec982f683d8982626fa6b1ee6c17cc")
+FLOW_API_KEY = os.getenv("FLOW_API_KEY")
+FLOW_SECRET_KEY = os.getenv("FLOW_SECRET_KEY")
 
 if not TOKEN or not FLOW_API_KEY or not FLOW_SECRET_KEY:
     print("❌ ERROR: Faltan las claves de API (TELEGRAM_BOT_TOKEN, FLOW_API_KEY o FLOW_SECRET_KEY). Revisa tu archivo .env.")
