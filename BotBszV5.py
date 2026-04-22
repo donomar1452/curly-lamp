@@ -17,13 +17,20 @@ from telegram.ext import (
 )
 
 # ==============================
-# CONFIGURACIÓN API FLOW (MODO PRODUCCIÓN)
+# CONFIGURACIÓN (AHORA SEGURA)
 # ==============================
 
-API_KEY = "60509DF1-3D9D-4B03-A7F4-4CB9LC6EA649"
-SECRET_KEY = "fab6effe60ec982f683d8982626fa6b1ee6c17cc"
+API_KEY = os.getenv("60509DF1-3D9D-4B03-A7F4-4CB9LC6EA649")
+SECRET_KEY = os.getenv("fab6effe60ec982f683d8982626fa6b1ee6c17cc")
+TOKEN = os.getenv("8439810935:AAEFnqLOSjwhRg4f6AmFL1H-ifr3umOxx7E")
 
-FLOW_URL = "https://api.flow.cl/api/payment/create"  # Cambiado a modo producción
+FLOW_URL = "https://api.flow.cl/api/payment/create"
+
+if not TOKEN:
+    raise ValueError("Falta el TOKEN de Telegram en variables de entorno")
+
+if not API_KEY or not SECRET_KEY:
+    raise ValueError("Faltan API_KEY o SECRET_KEY en variables de entorno")
 
 # ==============================
 # RESULTADOS
@@ -35,22 +42,14 @@ results = {
     "unknown": []
 }
 
-TOKEN = os.getenv("8439810935:AAEFnqLOSjwhRg4f6AmFL1H-ifr3umOxx7E")
-
-if not TOKEN:
-    TOKEN = input("8439810935:AAEFnqLOSjwhRg4f6AmFL1H-ifr3umOxx7E")
-
 # ==============================
 # GENERAR FIRMA
 # ==============================
 
 def generar_firma(params, secret_key):
-
     cadena = ""
-
     for key in sorted(params.keys()):
         cadena += f"{key}{params[key]}"
-
     cadena += secret_key
 
     return hashlib.sha256(
@@ -63,10 +62,8 @@ def generar_firma(params, secret_key):
 
 def generar_mensaje(data, linea):
 
-    if "url" in data:
-
-        return f"""
-✅ LIVE
+    if isinstance(data, dict) and "url" in data:
+        return f"""✅ LIVE
 
 Dato:
 {linea}
@@ -75,8 +72,7 @@ Link de pago:
 {data.get("url")}
 """
 
-    return f"""
-❓ UNKNOWN
+    return f"""❓ UNKNOWN
 
 Dato:
 {linea}
@@ -119,20 +115,14 @@ async def validate_cards(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     if not lines:
-
-        await update.message.reply_text(
-            "❌ No se encontraron líneas válidas."
-        )
-
+        await update.message.reply_text("❌ No se encontraron líneas válidas.")
         return
 
     live_count = 0
     die_count = 0
     unknown_count = 0
 
-    await update.message.reply_text(
-        "🔍 Procesando..."
-    )
+    await update.message.reply_text("🔍 Procesando...")
 
     timeout = ClientTimeout(total=30)
 
@@ -151,84 +141,53 @@ async def validate_cards(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "email": "cliente@email.com"
                 }
 
-                firma = generar_firma(
-                    params,
-                    SECRET_KEY
-                )
-
+                firma = generar_firma(params, SECRET_KEY)
                 params["s"] = firma
 
-                async with session.post(
-                    FLOW_URL,  # Cambiado a modo producción
-                    data=params
-                ) as res:
+                async with session.post(FLOW_URL, data=params) as res:
 
                     if res.status != 200:
-
                         results["unknown"].append(linea)
                         unknown_count += 1
 
-                        await update.message.reply_text(
-                            f"⚠️ HTTP {res.status}"
-                        )
-
+                        await update.message.reply_text(f"⚠️ HTTP {res.status}")
                         continue
 
                     text_response = await res.text()
 
                     try:
-
-                        data = json.loads(
-                            text_response
-                        )
-
+                        data = json.loads(text_response)
                     except:
-
                         data = text_response
 
                     if isinstance(data, dict) and "url" in data:
-
                         results["live"].append(linea)
                         live_count += 1
-
                     else:
-
                         results["unknown"].append(linea)
                         unknown_count += 1
 
-                    mensaje = generar_mensaje(
-                        data,
-                        linea
-                    )
+                    mensaje = generar_mensaje(data, linea)
 
-                    await update.message.reply_text(
-                        mensaje
-                    )
+                    await update.message.reply_text(mensaje)
 
             except asyncio.TimeoutError:
-
                 results["unknown"].append(linea)
                 unknown_count += 1
 
-                await update.message.reply_text(
-                    f"⏱️ Timeout: {linea}"
-                )
+                await update.message.reply_text(f"⏱️ Timeout: {linea}")
 
             except Exception as e:
-
                 results["die"].append(linea)
                 die_count += 1
 
-                await update.message.reply_text(
-                    f"❌ Error: {str(e)}"
-                )
+                await update.message.reply_text(f"❌ Error: {str(e)}")
 
             await asyncio.sleep(1)
 
     total = live_count + die_count + unknown_count
 
-    resumen = f"""
-✅ LIVE: {live_count}
+    resumen = f"""✅ LIVE: {live_count}
 ❌ DIE: {die_count}
 ❓ UNKNOWN: {unknown_count}
 📊 TOTAL: {total}
@@ -237,34 +196,21 @@ async def validate_cards(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(resumen)
 
 # ==============================
-# KEEP ALIVE
+# KEEP ALIVE (RENDER)
 # ==============================
 
 class DummyHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
-
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
-
-        self.wfile.write(
-            b"Bot is running"
-        )
+        self.wfile.write(b"Bot is running")
 
 def keep_alive():
+    port = int(os.environ.get("PORT", 8080))
 
-    port = int(
-        os.environ.get(
-            "PORT",
-            8080
-        )
-    )
-
-    server = HTTPServer(
-        ("0.0.0.0", port),
-        DummyHandler
-    )
+    server = HTTPServer(("0.0.0.0", port), DummyHandler)
 
     threading.Thread(
         target=server.serve_forever,
@@ -279,16 +225,9 @@ def main():
 
     keep_alive()
 
-    app = ApplicationBuilder().token(
-        TOKEN
-    ).build()
+    app = ApplicationBuilder().token(TOKEN).build()
 
-    app.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
-    )
+    app.add_handler(CommandHandler("start", start))
 
     app.add_handler(
         MessageHandler(
@@ -302,5 +241,4 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-
     main()
